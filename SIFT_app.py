@@ -5,6 +5,7 @@ from python_qt_binding import loadUi
 
 import cv2
 import sys
+import numpy as np
 
 class My_App(QtWidgets.QMainWindow):
 
@@ -24,7 +25,7 @@ class My_App(QtWidgets.QMainWindow):
         self._camera_device.set(3, 320)
         self._camera_device.set(4, 240) 
 
-		# Timer used to trigger the camera
+		## @brief Timer used to trigger the camera
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self.SLOT_query_camera)
         self._timer.setInterval(1000 / self._cam_fps)
@@ -36,6 +37,7 @@ class My_App(QtWidgets.QMainWindow):
         self.flann = cv2.FlannBasedMatcher(index_params, search_params)
         self.image_des = None
         self.image_kp = None
+        self.ref_image = None
     
     def SLOT_browse_button(self):
         dlg = QtWidgets.QFileDialog()
@@ -43,7 +45,7 @@ class My_App(QtWidgets.QMainWindow):
         if dlg.exec_():
             self.template_path = dlg.selectedFiles()[0]
 
-        # Procesing reference image
+        ## @brief Process the reference image to extract SIFT features.
         self.ref_image = cv2.imread(self.template_path, cv2.IMREAD_GRAYSCALE)
 
         self.image_kp, self.image_des = self.sift.detectAndCompute(self.ref_image, None)
@@ -63,23 +65,41 @@ class My_App(QtWidgets.QMainWindow):
 
     def SLOT_query_camera(self):
         ret, frame = self._camera_device.read()
-		#TODO run SIFT on the captured frame
 
         if self.image_des is not None:
             gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
+            ## @brief Process the camera frame to extract SIFT features.
             frame_kp, frame_des = self.sift.detectAndCompute(gray_frame, None)
 
+            ## @brief So long as frame_des is found, find matching SIFT descriptions between the two images using KNN
             if frame_des is not None:
                 matches = self.flann.knnMatch(self.image_des, frame_des, k=2)
-
+                
                 good_matches = []
                 
+                ## @brief Find matches that have a euclidean distance of less than 0.8
                 for m, n in matches:
                     if m.distance < 0.8 * n.distance:
                         good_matches.append(m)
 
-                frame = cv2.drawMatches(self.ref_image, self.image_kp, frame, frame_kp, good_matches, None)
+                ## @brief RANSAC algorithim! (I HAVE NO IDEA HOW THIS WORKS)
+                if len(good_matches) > 8:
+                    image_pts = np.float32([self.image_kp[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+                    frame_pts = np.float32([frame_kp[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+
+                    matrix, mask = cv2.findHomography(image_pts, frame_pts, cv2.RANSAC, 5.0)
+                    matchesMask = mask.ravel().tolist()
+
+                    ## @brief Apparently called a "Perspective Transform"
+                    h, w = self.ref_image.shape
+                    pts = np.float32([[0,0], [0, h], [w, h], [w, 0]]).reshape(-1, 1, 2)
+                    dst = cv2.perspectiveTransform(pts, matrix)
+
+                    homography = cv2.polylines(frame, [np.int32(dst)], True, (255, 0, 0), 3)
+                    frame = homography
+                else:
+                    matchesMask = None
 
 
         pixmap = self.convert_cv_to_pixmap(frame)
